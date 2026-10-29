@@ -1,12 +1,12 @@
-"""Core engine: web research + idea generation + exit-focused scoring."""
+"""Core engine: web research + idea generation + exit-focused scoring (Gemini)."""
 import json
 import os
 import re
 
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 
-DEFAULT_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
-SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 6}
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Weights for the "build it and sell it" score (sum = 100)
 WEIGHTS = {
@@ -19,25 +19,32 @@ WEIGHTS = {
 }
 
 
-def _client(api_key=None):
-    return Anthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
-
-
-def _ask(system, user, api_key=None, model=DEFAULT_MODEL, search=True, max_tokens=4000):
-    """Call Claude (optionally with live web search) and return the text."""
-    client = _client(api_key)
-    messages = [{"role": "user", "content": user}]
-    kwargs = {"model": model, "max_tokens": max_tokens, "system": system}
+def _ask(system, user, api_key=None, model=DEFAULT_MODEL, search=True, json_out=False):
+    """Call Gemini (optionally grounded with live Google Search) and return text."""
+    client = genai.Client(api_key=api_key or os.getenv("GEMINI_API_KEY"))
+    cfg = {"system_instruction": system, "temperature": 0.7}
     if search:
-        kwargs["tools"] = [SEARCH_TOOL]
+        cfg["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+    if json_out:  # JSON mode can't be combined with the search tool
+        cfg["response_mime_type"] = "application/json"
+    resp = client.models.generate_content(
+        model=model, contents=user, config=types.GenerateContentConfig(**cfg)
+    )
+    text = (resp.text or "").strip()
 
-    for _ in range(6):  # handle long search turns that get paused
-        resp = client.messages.create(messages=messages, **kwargs)
-        if resp.stop_reason == "pause_turn":
-            messages = [messages[0], {"role": "assistant", "content": resp.content}]
-            continue
-        break
-    return "".join(b.text for b in resp.content if b.type == "text").strip()
+    if search:  # append the real web sources Gemini used
+        try:
+            chunks = resp.candidates[0].grounding_metadata.grounding_chunks or []
+            seen, lines = set(), []
+            for c in chunks:
+                if c.web and c.web.uri not in seen:
+                    seen.add(c.web.uri)
+                    lines.append(f"- [{c.web.title or c.web.uri}]({c.web.uri})")
+            if lines:
+                text += "\n\n**Sources searched:**\n" + "\n".join(lines)
+        except Exception:
+            pass
+    return text
 
 
 def _extract_json(text):
@@ -64,23 +71,23 @@ def profile_text(p):
 def scan_trends(profile, api_key=None, model=DEFAULT_MODEL):
     """Step 1: research what is actually working around the world right now."""
     system = (
-        "You are a business researcher. Use web search to find REAL, current evidence. "
+        "You are a business researcher. Use Google Search to find REAL, current evidence. "
         "Prefer sources like acquisition marketplaces (Acquire.com, Flippa, Empire Flippers), "
         "Indie Hackers, Product Hunt, Y Combinator, Crunchbase, news, and industry reports. "
-        "Cite source names/URLs inline. Never invent numbers."
+        "Name your sources inline. Never invent numbers."
     )
-    user = f"""Research what is working RIGHT NOW (today's date matters) for someone with this profile:
+    user = f"""Research what is working RIGHT NOW for someone with this profile:
 
 {profile_text(profile)}
 
 Find and summarize:
 1. 6-8 fast-growing niches/trends globally (include emerging markets like India, SE Asia, Africa, LatAm, not just US).
 2. What types of small businesses are actually being SOLD on acquisition marketplaces and at what typical revenue multiples.
-3. Problems/pain points people are complaining about that software, services or AI could solve.
-4. Business models that are proven in one country but not yet copied in others (geographic arbitrage).
+3. Problems/pain points people complain about that software, services or AI could solve.
+4. Business models proven in one country but not yet copied in others (geographic arbitrage).
 
-Return concise markdown with sources."""
-    return _ask(system, user, api_key, model, search=True, max_tokens=5000)
+Return concise markdown."""
+    return _ask(system, user, api_key, model, search=True)
 
 
 def generate_ideas(profile, trends_md, n=8, api_key=None, model=DEFAULT_MODEL):
@@ -116,7 +123,7 @@ Return a JSON array. Each item:
   "first_7_day_test": str,
   "scores": {{"exit_appeal":1-10,"margin":1-10,"scalability":1-10,"easy_start":1-10,"competition_gap":1-10,"founder_fit":1-10}}
 }}"""
-    raw = _ask(system, user, api_key, model, search=False, max_tokens=7000)
+    raw = _ask(system, user, api_key, model, search=False, json_out=True)
     ideas = _extract_json(raw)
     for idea in ideas:
         idea["total_score"] = score(idea.get("scores", {}))
@@ -132,8 +139,8 @@ def score(scores):
 def deep_dive(idea, profile, api_key=None, model=DEFAULT_MODEL):
     """Step 3: validation + execution plan for one chosen idea."""
     system = (
-        "You are a pragmatic startup advisor. Use web search to check real competitors, "
-        "pricing and demand. Be honest about weaknesses. Cite sources."
+        "You are a pragmatic startup advisor. Use Google Search to check real competitors, "
+        "pricing and demand. Be honest about weaknesses."
     )
     user = f"""Profile:
 {profile_text(profile)}
@@ -150,4 +157,4 @@ Produce a markdown plan with these sections:
 ## Making it sellable (metrics buyers want, documentation, recurring revenue, owner-independence)
 ## Exit plan (marketplaces, brokers, likely buyers, realistic valuation range)
 ## Biggest risks and kill criteria (when to stop)"""
-    return _ask(system, user, api_key, model, search=True, max_tokens=6000)
+    return _ask(system, user, api_key, model, search=True)
