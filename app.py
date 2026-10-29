@@ -9,16 +9,16 @@ import engine
 
 st.set_page_config(page_title="Biz Idea Engine", page_icon="💡", layout="wide")
 st.title("💡 Biz Idea Engine")
-st.caption("Research the world → generate ideas → score for 'build & sell' → validate. AI + live web search.")
+st.caption("Research the world → generate ideas → score for 'build & sell' → validate. Gemini AI + Google Search.")
 
 # ---------- Sidebar: settings & profile ----------
 with st.sidebar:
     st.header("Settings")
     api_key = st.text_input(
-        "Anthropic API key",
+        "Gemini API key",
         type="password",
-        value=os.getenv("ANTHROPIC_API_KEY", ""),
-        help="Get one at console.anthropic.com. Stored only in this session.",
+        value=os.getenv("GEMINI_API_KEY", ""),
+        help="Get a free key at aistudio.google.com/apikey. Stored only in this session.",
     )
     model = st.text_input("Model", value=engine.DEFAULT_MODEL)
     n_ideas = st.slider("Number of ideas", 4, 12, 8)
@@ -44,7 +44,7 @@ for key in ("trends", "ideas", "plans"):
 
 def need_key():
     if not api_key:
-        st.error("Add your Anthropic API key in the sidebar.")
+        st.error("Add your Gemini API key in the sidebar.")
         st.stop()
 
 # ---------- Tabs ----------
@@ -128,3 +128,4 @@ with tab4:
                            f"research_{date.today()}.md")
     for name, plan in st.session_state.plans.items():
         st.download_button(f"⬇️ Plan: {name}", plan, f"plan_{name[:30].replace(' ', '_')}.md", key=name)
+     
